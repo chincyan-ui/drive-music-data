@@ -31,15 +31,37 @@ jobs:
           node -e '
             const { google } = require("googleapis");
             const fs = require("fs");
+            
+            // 支持的音频文件后缀白名单
+            const AUDIO_EXTENSIONS = [".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus"];
+
             async function run() {
               const oAuth2Client = new google.auth.OAuth2(process.env.CLIENT_ID, process.env.CLIENT_SECRET);
               oAuth2Client.setCredentials({ refresh_token: process.env.REFRESH_TOKEN });
               const drive = google.drive({ version: "v3", auth: oAuth2Client });
+              
+              // 仅拉取非回收站的文件，并在云端进行初步筛选
               const res = await drive.files.list({
-                q: "mimeType contains \x27audio/\x27 or name contains \x27.mp3\x27 or name contains \x27.wav\x27",
-                fields: "files(name, webContentLink)"
+                q: "trashed = false and (mimeType contains \x27audio/\x27 or name contains \x27.mp3\x27 or name contains \x27.wav\x27)",
+                fields: "files(name, mimeType, webContentLink)"
               });
-              const files = (res.data.files || []).filter(f => f.webContentLink).map(f => ({ name: f.name, downloadUrl: f.webContentLink }));
+
+              const files = (res.data.files || [])
+                .filter(f => {
+                  if (!f.webContentLink || !f.name) return false;
+                  const lowerName = f.name.toLowerCase();
+                  
+                  // 1. 严格校验必须以支持的音频后缀结尾（防止假后缀或误伤）
+                  const hasValidExt = AUDIO_EXTENSIONS.some(ext => lowerName.endsWith(ext));
+                  
+                  // 2. 严格校验 mimeType 必须以 audio/ 开头
+                  const hasValidMime = f.mimeType && f.mimeType.startsWith("audio/");
+                  
+                  // 符合其中一个即可（通常双重保障更稳妥）
+                  return hasValidExt || hasValidMime;
+                })
+                .map(f => ({ name: f.name, downloadUrl: f.webContentLink }));
+
               fs.writeFileSync("playlist.json", JSON.stringify(files, null, 2));
             }
             run().catch(console.error);
