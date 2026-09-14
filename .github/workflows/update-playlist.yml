@@ -40,29 +40,39 @@ jobs:
               oAuth2Client.setCredentials({ refresh_token: process.env.REFRESH_TOKEN });
               const drive = google.drive({ version: "v3", auth: oAuth2Client });
               
-              // 仅拉取非回收站的文件，并在云端进行初步筛选
-              const res = await drive.files.list({
-                q: "trashed = false and (mimeType contains \x27audio/\x27 or name contains \x27.mp3\x27 or name contains \x27.wav\x27)",
-                fields: "files(name, mimeType, webContentLink)"
-              });
+              let allFiles = [];
+              let pageToken = null;
 
-              const files = (res.data.files || [])
+              // 循环分页获取云盘中的所有文件
+              do {
+                const res = await drive.files.list({
+                  q: "trashed = false and (mimeType contains \x27audio/\x27 or name contains \x27.mp3\x27 or name contains \x27.wav\x27)",
+                  pageSize: 1000, // 每页最大拉取 1000 条
+                  pageToken: pageToken,
+                  fields: "nextPageToken, files(name, mimeType, webContentLink)"
+                });
+
+                if (res.data.files) {
+                  allFiles = allFiles.concat(res.data.files);
+                }
+                pageToken = res.data.nextPageToken;
+              } while (pageToken);
+
+              // 严格过滤并格式化
+              const files = allFiles
                 .filter(f => {
                   if (!f.webContentLink || !f.name) return false;
                   const lowerName = f.name.toLowerCase();
                   
-                  // 1. 严格校验必须以支持的音频后缀结尾（防止假后缀或误伤）
                   const hasValidExt = AUDIO_EXTENSIONS.some(ext => lowerName.endsWith(ext));
-                  
-                  // 2. 严格校验 mimeType 必须以 audio/ 开头
                   const hasValidMime = f.mimeType && f.mimeType.startsWith("audio/");
                   
-                  // 符合其中一个即可（通常双重保障更稳妥）
                   return hasValidExt || hasValidMime;
                 })
                 .map(f => ({ name: f.name, downloadUrl: f.webContentLink }));
 
               fs.writeFileSync("playlist.json", JSON.stringify(files, null, 2));
+              console.log(`成功同步了 ${files.length} 首音频文件。`);
             }
             run().catch(console.error);
           '
