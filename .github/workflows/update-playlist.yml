@@ -1,0 +1,53 @@
+name: Sync Google Drive Playlist
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *' # 每6小时自动同步一次
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install googleapis
+
+      - name: Run sync script
+        env:
+          CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
+        run: |
+          node -e '
+            const { google } = require("googleapis");
+            const fs = require("fs");
+            async function run() {
+              const oAuth2Client = new google.auth.OAuth2(process.env.CLIENT_ID, process.env.CLIENT_SECRET);
+              oAuth2Client.setCredentials({ refresh_token: process.env.REFRESH_TOKEN });
+              const drive = google.drive({ version: "v3", auth: oAuth2Client });
+              const res = await drive.files.list({
+                q: "mimeType contains \x27audio/\x27 or name contains \x27.mp3\x27 or name contains \x27.wav\x27",
+                fields: "files(name, webContentLink)"
+              });
+              const files = (res.data.files || []).filter(f => f.webContentLink).map(f => ({ name: f.name, downloadUrl: f.webContentLink }));
+              fs.writeFileSync("playlist.json", JSON.stringify(files, null, 2));
+            }
+            run().catch(console.error);
+          '
+
+      - name: Commit and push if changed
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add playlist.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update playlist.json" && git push)
