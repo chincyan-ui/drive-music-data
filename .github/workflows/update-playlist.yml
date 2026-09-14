@@ -1,9 +1,10 @@
-name: Sync Google Drive Playlist
+name: Sync Local Music Playlist
 
 on:
+  push:
+    paths:
+      - 'music/**' # 当 music 文件夹有音乐增减时自动触发
   workflow_dispatch:
-  schedule:
-    - cron: '0 */6 * * *' # 每6小时自动同步一次
 
 jobs:
   sync:
@@ -14,67 +15,47 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install dependencies
-        run: npm install googleapis
-
-      - name: Run sync script
-        env:
-          CLIENT_ID: ${{ secrets.CLIENT_ID }}
-          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
-          REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
+      - name: Generate Playlist from Music Folder
         run: |
           node -e '
-            const { google } = require("googleapis");
             const fs = require("fs");
-            
-            // 支持的音频文件后缀白名单
+            const path = require("path");
+
+            const musicDir = path.join(".", "music");
             const AUDIO_EXTENSIONS = [".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus"];
 
-            async function run() {
-              const oAuth2Client = new google.auth.OAuth2(process.env.CLIENT_ID, process.env.CLIENT_SECRET);
-              oAuth2Client.setCredentials({ refresh_token: process.env.REFRESH_TOKEN });
-              const drive = google.drive({ version: "v3", auth: oAuth2Client });
-              
-              let allFiles = [];
-              let pageToken = null;
-
-              // 循环分页获取云盘中的所有文件
-              do {
-                const res = await drive.files.list({
-                  q: "trashed = false and (mimeType contains \x27audio/\x27 or name contains \x27.mp3\x27 or name contains \x27.wav\x27)",
-                  pageSize: 1000, // 每页最大拉取 1000 条
-                  pageToken: pageToken,
-                  fields: "nextPageToken, files(name, mimeType, webContentLink)"
-                });
-
-                if (res.data.files) {
-                  allFiles = allFiles.concat(res.data.files);
-                }
-                pageToken = res.data.nextPageToken;
-              } while (pageToken);
-
-              // 严格过滤并格式化
-              const files = allFiles
-                .filter(f => {
-                  if (!f.webContentLink || !f.name) return false;
-                  const lowerName = f.name.toLowerCase();
-                  
-                  const hasValidExt = AUDIO_EXTENSIONS.some(ext => lowerName.endsWith(ext));
-                  const hasValidMime = f.mimeType && f.mimeType.startsWith("audio/");
-                  
-                  return hasValidExt || hasValidMime;
-                })
-                .map(f => ({ name: f.name, downloadUrl: f.webContentLink }));
-
-              fs.writeFileSync("playlist.json", JSON.stringify(files, null, 2));
-              console.log(`成功同步了 ${files.length} 首音频文件。`);
+            if (!fs.existsSync(musicDir)) {
+              console.log("未找到 music 文件夹，创建空列表。");
+              fs.writeFileSync("playlist.json", JSON.stringify([], null, 2));
+              process.exit(0);
             }
-            run().catch(console.error);
+
+            // 递归或直接读取 music 目录下的文件
+            const files = fs.readdirSync(musicDir);
+            const playlist = [];
+
+            // 请将下面这行中的 chincyan-ui/drive-music-data 替换为你自己的【GitHub用户名/仓库名】
+            const repoOwnerAndName = "chincyan-ui/drive-music-data"; 
+
+            for (const file of files) {
+              const lowerName = file.toLowerCase();
+              const hasValidExt = AUDIO_EXTENSIONS.some(ext => lowerName.endsWith(ext));
+              
+              if (hasValidExt) {
+                // 拼装 GitHub Raw 绝对直链（100% 可被 Android MediaPlayer 直接流式播放）
+                // 对文件名进行编码以防包含空格或特殊字符
+                const encodedFileName = encodeURIComponent(file);
+                const downloadUrl = `https://raw.githubusercontent.com/${repoOwnerAndName}/main/music/${encodedFileName}`;
+                
+                playlist.push({
+                  name: file,
+                  downloadUrl: downloadUrl
+                });
+              }
+            }
+
+            fs.writeFileSync("playlist.json", JSON.stringify(playlist, null, 2));
+            console.log(`成功生成包含 ${playlist.length} 首歌曲的播放列表。`);
           '
 
       - name: Commit and push if changed
@@ -82,4 +63,4 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add playlist.json
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update playlist.json" && git push)
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update playlist.json from music folder" && git push)
